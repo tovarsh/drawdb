@@ -66,6 +66,7 @@ export default function McpContextProvider({ children }) {
   const { enums } = useEnums();
   const undoRedo = useUndoRedo();
   const wsRef = useRef(null);
+  const reconnectTimer = useRef(null);
   const [disabled, setDisabled] = useState(() => localStorage.getItem("mcp_disabled") === "true");
   const disabledRef = useRef(disabled);
   disabledRef.current = disabled;
@@ -84,6 +85,9 @@ export default function McpContextProvider({ children }) {
   enumsRef.current = enums;
   const undoRedoRef = useRef(undoRedo);
   undoRedoRef.current = undoRedo;
+
+  // Ref to break circular dependency between wireSocket ↔ connect
+  const connectFnRef = useRef(null);
 
   const setRelayUrl = useCallback((url) => {
     localStorage.setItem(RELAY_URL_KEY, url);
@@ -165,19 +169,13 @@ export default function McpContextProvider({ children }) {
       setStatus("disconnected");
       setSessionId(null);
       if (!disabledRef.current) {
-        reconnectTimer.current = setTimeout(connect, RECONNECT_DELAY);
+        reconnectTimer.current = setTimeout(() => connectFnRef.current?.(), RECONNECT_DELAY);
       }
     };
-  }, [handleToolCall, connect]);
-
-  const stop = useCallback(() => {
-    disconnect();
-    setDisabled(true);
-    localStorage.setItem("mcp_disabled", "true");
-  }, [disconnect]);
+  }, [handleToolCall]);
 
   const connect = useCallback(() => {
-    if (disabled) return;
+    if (disabledRef.current) return;
     disconnect();
     setStatus("connecting");
 
@@ -196,10 +194,26 @@ export default function McpContextProvider({ children }) {
         wireSocket(ws, sid, port);
       } else {
         setStatus("disconnected");
-        reconnectTimer.current = setTimeout(connect, RECONNECT_DELAY);
+        reconnectTimer.current = setTimeout(() => connectFnRef.current?.(), RECONNECT_DELAY);
       }
     });
-  }, [disabled, disconnect, wireSocket]);
+  }, [disconnect, wireSocket]);
+
+  // Wire up the ref after both functions are defined
+  connectFnRef.current = connect;
+
+  const stop = useCallback(() => {
+    disconnect();
+    setDisabled(true);
+    localStorage.setItem("mcp_disabled", "true");
+  }, [disconnect]);
+
+  const reconnect = useCallback(() => {
+    setDisabled(false);
+    disabledRef.current = false;
+    localStorage.removeItem("mcp_disabled");
+    connect();
+  }, [connect]);
 
   useEffect(() => {
     connect();
@@ -210,12 +224,6 @@ export default function McpContextProvider({ children }) {
         wsRef.current.close();
       }
     };
-  }, [connect]);
-
-  const reconnect = useCallback(() => {
-    setDisabled(false);
-    localStorage.removeItem("mcp_disabled");
-    connect();
   }, [connect]);
 
   const value = useMemo(() => ({

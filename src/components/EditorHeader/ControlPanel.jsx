@@ -1,5 +1,6 @@
 import { useContext, useState } from "react";
 import { Slot, useExtensions } from "../../context/ExtensionsContext";
+import McpIndicator from "../McpIndicator";
 import { createPortal } from "react-dom";
 import {
   IconCaretdown,
@@ -1640,6 +1641,7 @@ export default function ControlPanel({
           >
             {header()}
             <div className="flex items-center gap-2 me-7">
+              <McpIndicator />
               <Slot name="header-actions-start" />
               {!isTemplate && (
                 <Button

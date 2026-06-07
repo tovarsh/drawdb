@@ -3,7 +3,7 @@ import { Input, Popover, Button } from "@douyinfe/semi-ui";
 import { useMcp } from "../context/McpContext";
 
 export default function McpIndicator() {
-  const { status, sessionId, relayUrl, setRelayUrl } = useMcp();
+  const { status, sessionId, relayUrl, setRelayUrl, disabled, stop, reconnect } = useMcp();
   const [open, setOpen] = useState(false);
   const [editUrl, setEditUrl] = useState(relayUrl);
 
@@ -11,12 +11,16 @@ export default function McpIndicator() {
     connected: "#10b981",
     connecting: "#f59e0b",
     disconnected: "#6b7280",
+    disabled: "#d1d5db",
   };
+
+  const currentStatus = disabled ? "disabled" : status;
 
   const labels = {
     connected: sessionId ? `AI connected (${sessionId})` : "AI connected",
     connecting: "AI connecting…",
     disconnected: "AI disconnected",
+    disabled: "MCP off",
   };
 
   const handleSave = () => {
@@ -28,7 +32,8 @@ export default function McpIndicator() {
   };
 
   const handleReset = () => {
-    setEditUrl("ws://localhost:3001");
+    setEditUrl("");
+    setRelayUrl("");
   };
 
   const content = (
@@ -39,24 +44,49 @@ export default function McpIndicator() {
       <Input
         value={editUrl}
         onChange={setEditUrl}
-        placeholder="ws://localhost:3001"
+        placeholder="ws://localhost:23432"
         size="small"
         onKeyDown={(e) => { if (e.key === "Enter") handleSave(); }}
       />
       <div className="text-xs text-gray-400">
-        {status === "connected"
+        {currentStatus === "connected"
           ? `Connected${sessionId ? ` (${sessionId})` : ""}`
-          : status === "connecting"
-            ? "Connecting…"
-            : "Disconnected — relay not reachable"}
+          : currentStatus === "connecting"
+            ? "Scanning ports 23432-23442…"
+            : currentStatus === "disabled"
+              ? "MCP connection stopped"
+              : "Relay not reachable"}
+      </div>
+      <div className="text-xs text-gray-400">
+        Connect AI assistants to edit diagrams.{" "}
+        <a
+          href="https://github.com/tovarsh/mcp-drawdb"
+          target="_blank"
+          rel="noopener noreferrer"
+          className="text-blue-500 hover:underline"
+        >
+          Learn more →
+        </a>
       </div>
       <div className="flex gap-2">
-        <Button size="small" theme="solid" onClick={handleSave}>
-          Save & Reconnect
-        </Button>
-        <Button size="small" onClick={handleReset}>
-          Reset
-        </Button>
+        {!disabled && (
+          <>
+            <Button size="small" theme="solid" onClick={handleSave}>
+              Save
+            </Button>
+            <Button size="small" onClick={handleReset}>
+              Reset
+            </Button>
+            <Button size="small" type="danger" onClick={() => { stop(); setOpen(false); }}>
+              Stop
+            </Button>
+          </>
+        )}
+        {disabled && (
+          <Button size="small" theme="solid" onClick={() => { reconnect(); setOpen(false); }}>
+            Reconnect
+          </Button>
+        )}
       </div>
     </div>
   );
@@ -72,13 +102,13 @@ export default function McpIndicator() {
     >
       <div
         className="flex items-center gap-1.5 cursor-pointer select-none px-2 py-1 rounded-md hover:bg-gray-100 dark:hover:bg-gray-800 transition-colors"
-        title={labels[status]}
+        title={labels[currentStatus]}
       >
         <span
           className="inline-block w-2 h-2 rounded-full"
           style={{
-            backgroundColor: colors[status],
-            boxShadow: status === "connected" ? `0 0 6px ${colors[status]}` : "none",
+            backgroundColor: colors[currentStatus],
+            boxShadow: currentStatus === "connected" ? `0 0 6px ${colors.connected}` : "none",
             transition: "all 0.3s ease",
           }}
         />

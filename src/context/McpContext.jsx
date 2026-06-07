@@ -5,9 +5,59 @@ import { Msg } from "./McpProtocol";
 
 const McpContext = createContext(null);
 
-const DEFAULT_RELAY_URL = "ws://localhost:3001";
+const PORT_START = 23432;
+const PORT_END = 23442;
 const RELAY_URL_KEY = "mcp_relay_url";
 const RECONNECT_DELAY = 3000;
+
+/** Scan ports in parallel, return the first WebSocket that gets browser:registered. */
+function scanPorts(ports, onRegistered) {
+  let settled = false;
+  const sockets = [];
+
+  for (const port of ports) {
+    let ws;
+    try {
+      ws = new WebSocket(`ws://localhost:${port}`);
+    } catch {
+      continue;
+    }
+    sockets.push(ws);
+
+    const timer = setTimeout(() => {
+      if (!settled) ws.close();
+    }, 3000);
+
+    ws.onopen = () => {
+      if (settled) { ws.close(); return; }
+      ws.send(JSON.stringify({ type: Msg.BROWSER_REGISTER }));
+    };
+
+    ws.onmessage = (event) => {
+      if (settled) return;
+      let msg;
+      try { msg = JSON.parse(event.data); } catch { return; }
+      if (msg.type === Msg.BROWSER_REGISTERED) {
+        settled = true;
+        clearTimeout(timer);
+        sockets.forEach((s) => { if (s !== ws && s.readyState < 2) s.close(); });
+        onRegistered(ws, msg.sessionId, port);
+      }
+    };
+
+    ws.onerror = () => {};
+    ws.onclose = () => clearTimeout(timer);
+  }
+
+  // If ALL fail, report failure after timeout
+  setTimeout(() => {
+    if (!settled) {
+      settled = true;
+      sockets.forEach((s) => { if (s.readyState < 2) s.close(); });
+      onRegistered(null);
+    }
+  }, 3500);
+}
 
 export default function McpContextProvider({ children }) {
   const diagram = useDiagram();
@@ -16,11 +66,13 @@ export default function McpContextProvider({ children }) {
   const { enums } = useEnums();
   const undoRedo = useUndoRedo();
   const wsRef = useRef(null);
-  const reconnectTimer = useRef(null);
+  const [disabled, setDisabled] = useState(() => localStorage.getItem("mcp_disabled") === "true");
+  const disabledRef = useRef(disabled);
+  disabledRef.current = disabled;
   const [status, setStatus] = useState("disconnected");
   const [sessionId, setSessionId] = useState(null);
   const [relayUrl, setRelayUrlState] = useState(
-    () => localStorage.getItem(RELAY_URL_KEY) || DEFAULT_RELAY_URL,
+    () => localStorage.getItem(RELAY_URL_KEY) || "",
   );
   const diagramRef = useRef(diagram);
   diagramRef.current = diagram;
@@ -42,6 +94,7 @@ export default function McpContextProvider({ children }) {
     clearTimeout(reconnectTimer.current);
     reconnectTimer.current = null;
     if (wsRef.current) {
+      wsRef.current.onclose = null;
       wsRef.current.close();
       wsRef.current = null;
     }
@@ -91,52 +144,78 @@ export default function McpContextProvider({ children }) {
     }
   }, []);
 
-  const connect = useCallback(() => {
-    disconnect();
+  const wireSocket = useCallback((ws, sid, port) => {
+    const url = `ws://localhost:${port}`;
+    localStorage.setItem(RELAY_URL_KEY, url);
+    setRelayUrlState(url);
+    wsRef.current = ws;
+    setStatus("connected");
+    setSessionId(sid);
 
-    setStatus("connecting");
-    try {
-      const ws = new WebSocket(relayUrl);
+    ws.onmessage = (event) => {
+      let msg;
+      try { msg = JSON.parse(event.data); } catch { return; }
+      if (msg.type === Msg.BROWSER_TOOL_CALL) {
+        handleToolCall(ws, msg);
+      }
+    };
 
-      ws.onopen = () => {
-        wsRef.current = ws;
-        setStatus("connected");
-        ws.send(JSON.stringify({ type: Msg.BROWSER_REGISTER }));
-      };
-
-      ws.onmessage = (event) => {
-        let msg;
-        try { msg = JSON.parse(event.data); } catch { return; }
-
-        if (msg.type === Msg.BROWSER_REGISTERED) {
-          setSessionId(msg.sessionId);
-          return;
-        }
-
-        if (msg.type === Msg.BROWSER_TOOL_CALL) {
-          handleToolCall(ws, msg);
-        }
-      };
-
-      ws.onclose = () => {
-        wsRef.current = null;
-        setStatus("disconnected");
-        setSessionId(null);
+    ws.onclose = () => {
+      wsRef.current = null;
+      setStatus("disconnected");
+      setSessionId(null);
+      if (!disabledRef.current) {
         reconnectTimer.current = setTimeout(connect, RECONNECT_DELAY);
-      };
+      }
+    };
+  }, [handleToolCall, connect]);
 
-      ws.onerror = () => {};
-    } catch {
-      reconnectTimer.current = setTimeout(connect, RECONNECT_DELAY);
+  const stop = useCallback(() => {
+    disconnect();
+    setDisabled(true);
+    localStorage.setItem("mcp_disabled", "true");
+  }, [disconnect]);
+
+  const connect = useCallback(() => {
+    if (disabled) return;
+    disconnect();
+    setStatus("connecting");
+
+    const stored = localStorage.getItem(RELAY_URL_KEY);
+    const storedPort = stored ? parseInt(stored.replace(/.*:(\d+)\/?/, "$1"), 10) : 0;
+
+    // Build port list: stored port first, then full range
+    const ports = [];
+    if (storedPort >= PORT_START && storedPort <= PORT_END) ports.push(storedPort);
+    for (let p = PORT_START; p <= PORT_END; p++) {
+      if (p !== storedPort) ports.push(p);
     }
-  }, [relayUrl, disconnect, handleToolCall]);
+
+    scanPorts(ports, (ws, sid, port) => {
+      if (ws) {
+        wireSocket(ws, sid, port);
+      } else {
+        setStatus("disconnected");
+        reconnectTimer.current = setTimeout(connect, RECONNECT_DELAY);
+      }
+    });
+  }, [disabled, disconnect, wireSocket]);
 
   useEffect(() => {
     connect();
     return () => {
       clearTimeout(reconnectTimer.current);
-      wsRef.current?.close();
+      if (wsRef.current) {
+        wsRef.current.onclose = null;
+        wsRef.current.close();
+      }
     };
+  }, [connect]);
+
+  const reconnect = useCallback(() => {
+    setDisabled(false);
+    localStorage.removeItem("mcp_disabled");
+    connect();
   }, [connect]);
 
   const value = useMemo(() => ({
@@ -145,8 +224,10 @@ export default function McpContextProvider({ children }) {
     isConnected: status === "connected",
     relayUrl,
     setRelayUrl,
-    reconnect: connect,
-  }), [status, sessionId, relayUrl, setRelayUrl, connect]);
+    disabled,
+    stop,
+    reconnect,
+  }), [status, sessionId, relayUrl, setRelayUrl, disabled, stop, reconnect]);
 
   return (
     <McpContext.Provider value={value}>
